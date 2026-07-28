@@ -1,0 +1,17 @@
+traffic:
+  seo:
+    enabled: true
+  email:
+    enabled: true
+  community:
+    enabled: true
+  paid_social:
+    enabled: false
+    platform: shopify_audiences
+
+judge:
+  min_anti_slop_score: 7.5
+  min_overall_score: 7.5
+
+orchestrator:
+  max_generation_attempts: 3
