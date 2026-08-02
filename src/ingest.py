@@ -461,10 +461,11 @@ def run_ingest():
 
     log_ingest.info("  Storing %d signals to SQLite (with meta_json)...", len(signals))
     with get_connection() as conn:
+        cursor = conn.cursor()
         for i, s in enumerate(signals, 1):
-            conn.execute("INSERT INTO trends (signal, volume, growth, meta_json) VALUES (?, ?, ?, ?)",
+            cursor.execute("INSERT INTO trends (signal, volume, growth, meta_json) VALUES (?, ?, ?, ?)",
                          (s["signal"], s["volume"], s["growth"], json.dumps(s.get("meta", {}))))
-            trend_id = conn.lastrowid
+            trend_id = cursor.lastrowid
             log_ingest.debug("    [%d/%d] '%s' | vol=%d | growth=%+.1f%% | trend_id=%d", 
                             i, len(signals), s["signal"], s["volume"], s["growth"], trend_id)
             
@@ -478,7 +479,7 @@ def run_ingest():
             if signal_key and signal_key in posts_to_store:
                 raw_posts = posts_to_store[signal_key]
                 for post in raw_posts:
-                    conn.execute("""
+                    cursor.execute("""
                         INSERT INTO trend_posts 
                         (trend_id, post_id, platform, content, author_handle, likes, comments, shares, impressions, post_timestamp)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -495,6 +496,7 @@ def run_ingest():
                         post.get("post_timestamp")
                     ))
                 log_ingest.debug("    Stored %d raw posts for trend '%s'", len(raw_posts), s["signal"])
+        conn.commit()
     
     log_ingest.info("=== INGEST NODE COMPLETE: %d signals stored + %d total raw posts ===", 
                     len(signals), sum(len(posts) for posts in posts_to_store.values()))
