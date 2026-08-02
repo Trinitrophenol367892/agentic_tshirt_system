@@ -263,7 +263,7 @@ Pick 3 to {MAX_DISCOVERED_KEYWORDS}. Prioritize freshness, wearability, visual p
             log_ingest.info("    ✓ '%s' [%s]", k, types[i] if i < len(types) else "?")
         return rel[:MAX_DISCOVERED_KEYWORDS]
 
-    # ---- STAGE 3 (now also captures audience intel + velocity + references) ----
+    # ---- STAGE 3 (now also captures audience intel + velocity + references + RAW POSTS) ----
     def extract_signals(self, validated_keywords):
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=EXTRACTION_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
@@ -276,7 +276,7 @@ Pick 3 to {MAX_DISCOVERED_KEYWORDS}. Prioritize freshness, wearability, visual p
                    "communities": Counter(), "creators": Counter(),
                    "recent_eng": 0, "recent_n": 0, "early_eng": 0, "early_n": 0,
                    "discussion_sum": 0.0, "pos_sum": 0.0, "sent_n": 0,
-                   "ref_candidates": []} for k in validated_keywords}
+                   "ref_candidates": [], "raw_posts": []} for k in validated_keywords}
 
         for keyword in validated_keywords:
             term = keyword.lstrip("#")
@@ -317,8 +317,24 @@ Pick 3 to {MAX_DISCOVERED_KEYWORDS}. Prioritize freshness, wearability, visual p
                     txt = _post_text(p, plat).strip()
                     if txt:
                         a["ref_candidates"].append((eng, txt))
+                    # NEW: Capture raw post evidence for database storage
+                    post_id = getattr(p, "id", None)
+                    if post_id:
+                        a["raw_posts"].append({
+                            "post_id": str(post_id),
+                            "platform": plat,
+                            "content": txt[:2000],  # Truncate very long posts
+                            "author_handle": auth,
+                            "likes": likes,
+                            "comments": replies,
+                            "shares": getattr(p, "retweet_count", 0) or getattr(p, "collect_count", 0) or 0,
+                            "impressions": impressions or plays or 0,
+                            "post_timestamp": d.isoformat() if d else None
+                        })
 
         signals = []
+        posts_to_store = {}  # keyword -> list of raw posts
+
         for keyword in validated_keywords:
             a = agg[keyword]
             if a["posts"] < 2:
@@ -360,6 +376,9 @@ Pick 3 to {MAX_DISCOVERED_KEYWORDS}. Prioritize freshness, wearability, visual p
             top_comm = [c for c, _ in a["communities"].most_common(5)]
             top_creators = [c for c, _ in a["creators"].most_common(5)]
 
+            # Store raw posts for later database insertion
+            posts_to_store[keyword] = a["raw_posts"][:10]  # Keep top 10 posts per keyword
+
             meta = {
                 "platforms": sorted(a["platforms"]),
                 "post_count": a["posts"],
@@ -381,7 +400,7 @@ Pick 3 to {MAX_DISCOVERED_KEYWORDS}. Prioritize freshness, wearability, visual p
         signals.sort(key=lambda s: s["meta"]["avg_engagement"], reverse=True)
         signals = signals[:10]
         log_ingest.info("  [STAGE 3] Extracted %d enriched signals.", len(signals))
-        return signals
+        return signals, posts_to_store
 
     def _search(self, platform, query, start_date, end_date, fields):
         try:
@@ -417,6 +436,8 @@ def load_confirmed_trends():
 def run_ingest():
     log_ingest.info("=== INGEST NODE STARTED ===")
     api_key = os.getenv("XPOZ_API_KEY")
+    posts_to_store = {}
+    
     if not api_key or api_key == "your_xpoz_api_key_here":
         log_ingest.warning("XPOZ_API_KEY not configured; using fallback signals.")
         signals = [{"signal": "Glitchcore Aesthetic", "volume": 15000, "growth": 45.2, "meta": {}},
@@ -427,7 +448,7 @@ def run_ingest():
             confirmed = load_confirmed_trends()
             raw = client.discover_raw_keywords()
             validated = client.llm_filter_relevance(raw, confirmed)
-            signals = client.extract_signals(validated)
+            signals, posts_to_store = client.extract_signals(validated)
             client.close()
             if not signals:
                 log_ingest.warning("  No qualified signals; fallback.")
@@ -443,5 +464,37 @@ def run_ingest():
         for i, s in enumerate(signals, 1):
             conn.execute("INSERT INTO trends (signal, volume, growth, meta_json) VALUES (?, ?, ?, ?)",
                          (s["signal"], s["volume"], s["growth"], json.dumps(s.get("meta", {}))))
-            log_ingest.debug("    [%d/%d] '%s' | vol=%d | growth=%+.1f%%", i, len(signals), s["signal"], s["volume"], s["growth"])
-    log_ingest.info("=== INGEST NODE COMPLETE: %d signals stored ===", len(signals))
+            trend_id = conn.lastrowid
+            log_ingest.debug("    [%d/%d] '%s' | vol=%d | growth=%+.1f%% | trend_id=%d", 
+                            i, len(signals), s["signal"], s["volume"], s["growth"], trend_id)
+            
+            # Store raw posts in dedicated trend_posts table
+            signal_key = None
+            for k in posts_to_store.keys():
+                if k.lstrip("#").title() == s["signal"]:
+                    signal_key = k
+                    break
+            
+            if signal_key and signal_key in posts_to_store:
+                raw_posts = posts_to_store[signal_key]
+                for post in raw_posts:
+                    conn.execute("""
+                        INSERT INTO trend_posts 
+                        (trend_id, post_id, platform, content, author_handle, likes, comments, shares, impressions, post_timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        trend_id,
+                        post["post_id"],
+                        post["platform"],
+                        post["content"],
+                        post.get("author_handle"),
+                        post.get("likes", 0),
+                        post.get("comments", 0),
+                        post.get("shares", 0),
+                        post.get("impressions", 0),
+                        post.get("post_timestamp")
+                    ))
+                log_ingest.debug("    Stored %d raw posts for trend '%s'", len(raw_posts), s["signal"])
+    
+    log_ingest.info("=== INGEST NODE COMPLETE: %d signals stored + %d total raw posts ===", 
+                    len(signals), sum(len(posts) for posts in posts_to_store.values()))
