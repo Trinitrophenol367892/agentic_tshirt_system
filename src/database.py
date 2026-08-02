@@ -6,7 +6,7 @@ DB_PATH = "system_data.db"
 
 
 def _ensure_meta_column(conn):
-    """Add trends.meta_json if missing (idempotent migration)."""
+    """Add trends.meta_json and trend_posts table if missing (idempotent migration)."""
     try:
         conn.execute("ALTER TABLE trends ADD COLUMN meta_json TEXT")
         log_db.info("  Added trends.meta_json column (audience intel + references).")
@@ -15,6 +15,28 @@ def _ensure_meta_column(conn):
             log_db.debug("  trends.meta_json already present.")
         else:
             log_db.warning("  meta_json migration note: %s", str(e)[:80])
+    
+    # Create dedicated table for raw social media posts (evidence-based architecture)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS trend_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trend_id INTEGER NOT NULL,
+            post_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            content TEXT NOT NULL,
+            author_handle TEXT,
+            likes INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0,
+            shares INTEGER DEFAULT 0,
+            impressions INTEGER DEFAULT 0,
+            post_timestamp DATETIME,
+            fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (trend_id) REFERENCES trends(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_trend_posts_trend_id ON trend_posts(trend_id);
+        CREATE INDEX IF NOT EXISTS idx_trend_posts_platform ON trend_posts(platform);
+    """)
+    log_db.info("  Verified trend_posts table (raw social media evidence storage).")
 
 
 def init_db():
