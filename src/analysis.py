@@ -365,11 +365,12 @@ THEMATIC COHERENCE: If multiple trends are provided, synthesize them into ONE co
             f"  Sentiment by signal (engagement-shape proxy): {'; '.join(sent)}\n"
         )
     
-    # OPTIMIZATION A: Inject RAW EVIDENCE BLOCK for grounded analysis
+    # OPTIMIZATION A + B: Inject RAW EVIDENCE BLOCK with SELECTION REASONS for grounded analysis
     if evidence_block:
         user_prompt += "\n" + "="*80 + "\n"
         user_prompt += "RAW_EVIDENCE_BLOCK (ACTUAL SOCIAL MEDIA POSTS - YOUR PRIMARY SOURCE OF TRUTH):\n"
         user_prompt += "="*80 + "\n"
+        user_prompt += "Each post is tagged with WHY it was selected (Engagement=reach, Discussion=debate/emotion, Velocity=momentum).\n"
         user_prompt += "Extract language, tone, slang, and visual descriptors DIRECTLY from these posts.\n"
         user_prompt += "Do NOT paraphrase - preserve the authentic voice in your trigger_phrases and slogan_formulas.\n\n"
         
@@ -378,15 +379,17 @@ THEMATIC COHERENCE: If multiple trends are provided, synthesize them into ONE co
             likes = post.get('likes', 0)
             comments = post.get('comments', 0)
             content = post.get('content', '')[:200]
-            author = post.get('author_handle', 'anon')
+            author = post.get('author', 'anon')
+            selection_reason = post.get('_selection_reason', 'General')
             
-            user_prompt += f"[{i+1}] ({platform.upper()}, {likes:,}♥, {comments:,}💬) @{author}:\n"
+            user_prompt += f"[{i+1}] {selection_reason} | {platform.upper()} | {likes:,}♥ | {comments:,}💬 | @{author}:\n"
             user_prompt += f"    \"{content}\"\n\n"
         
         user_prompt += "-"*80 + "\n"
         user_prompt += "REMINDER: Your trigger_phrases must be EXTRACTED verbatim from above.\n"
         user_prompt += "Your slogan_formulas must MIMIC the syntax patterns found above.\n"
         user_prompt += "Your visual_style must reflect DESCRIPTORS mentioned or implied above.\n"
+        user_prompt += "Pay attention to WHY posts were selected - High Discussion posts reveal emotional triggers.\n"
         user_prompt += "-"*80 + "\n"
     
     if resonating_references:
@@ -484,10 +487,66 @@ def run_analysis(direction_feedback=None):
     return brief
 
 
+def _select_evidence_posts(posts_list, limit=15):
+    """
+    OPTIMIZATION B: Strategic Evidence Selection
+    
+    Selects a diversified portfolio of posts rather than just top-likes.
+    Prioritizes: High Engagement (Likes), High Discussion (Comments), High Velocity (Recent), Platform Diversity.
+    
+    Returns list of posts with '_selection_reason' tag explaining why each was chosen.
+    """
+    if not posts_list:
+        return []
+    
+    selected = []
+    seen_ids = set()
+    
+    # Sort by different strategic metrics
+    by_likes = sorted(posts_list, key=lambda x: x.get('likes', 0), reverse=True)
+    by_comments = sorted(posts_list, key=lambda x: x.get('comments', 0), reverse=True)
+    by_recent = sorted(posts_list, key=lambda x: x.get('post_timestamp', '') or '', reverse=True)
+    
+    # Strategy: Pick from each category to ensure diverse insights
+    strategies = [
+        ("High Engagement (Likes)", by_likes),
+        ("High Discussion (Comments)", by_comments),
+        ("Emerging Velocity (Recent)", by_recent)
+    ]
+    
+    slots_per_strategy = (limit // len(strategies)) + 1
+    
+    for label, sorted_list in strategies:
+        count = 0
+        for post in sorted_list:
+            if count >= slots_per_strategy or len(selected) >= limit:
+                break
+            if post['post_id'] not in seen_ids:
+                post_copy = post.copy()
+                post_copy['_selection_reason'] = label
+                selected.append(post_copy)
+                seen_ids.add(post['post_id'])
+                count += 1
+    
+    # Fill remaining slots with top likes if needed
+    if len(selected) < limit:
+        for post in by_likes:
+            if len(selected) >= limit:
+                break
+            if post['post_id'] not in seen_ids:
+                post_copy = post.copy()
+                post_copy['_selection_reason'] = "Filler (Top Likes)"
+                selected.append(post_copy)
+                seen_ids.add(post['post_id'])
+    
+    return selected[:limit]
+
+
 def _load_trend_meta_from_filtered(filtered_trends):
     """
     Optimized version of _load_trend_meta that works with pre-filtered trend tuples.
     Re-queries meta_json AND raw posts for only the filtered trend IDs to ensure consistency.
+    Applies STRATEGIC EVIDENCE SELECTION (Optimization B) instead of simple top-likes sorting.
     Returns: (audience_intelligence, references, evidence_block)
     """
     if not filtered_trends:
@@ -507,7 +566,7 @@ def _load_trend_meta_from_filtered(filtered_trends):
     
     communities, creators = {}, {}
     references, sentiments, velocities = [], [], []
-    evidence_block = []  # NEW: Raw post samples for LLM grounding
+    all_posts = []  # Collect all posts first, then apply strategic selection
     
     for trend_id, signal, meta_raw in rows:
         try:
@@ -528,26 +587,31 @@ def _load_trend_meta_from_filtered(filtered_trends):
             sentiments.append(f"{signal}: {meta['sentiment_proxy']}")
         velocities.append(f"{signal}: {meta.get('velocity_source', '?')} velocity")
         
-        # NEW: Fetch raw posts from dedicated trend_posts table
+        # Fetch ALL raw posts from dedicated trend_posts table for this trend
         post_cur = conn.execute("""
-            SELECT content, platform, likes, comments, author_handle 
+            SELECT content, platform, likes, comments, author_handle, post_timestamp
             FROM trend_posts 
             WHERE trend_id = ? 
             ORDER BY likes DESC 
-            LIMIT 3
+            LIMIT 10
         """, (trend_id,))
         post_rows = post_cur.fetchall()
         
-        for post_content, platform, likes, comments, author in post_rows:
+        for post_content, platform, likes, comments, author, timestamp in post_rows:
             if post_content and len(post_content.strip()) > 20:
-                evidence_block.append({
+                all_posts.append({
+                    "post_id": f"{trend_id}_{platform}_{likes}",  # Unique ID for deduplication
                     "signal": signal,
                     "platform": platform,
                     "content": post_content[:300],
                     "likes": likes,
                     "comments": comments,
-                    "author": author
+                    "author": author,
+                    "post_timestamp": timestamp or ""
                 })
+    
+    # Apply strategic evidence selection (Optimization B)
+    evidence_block = _select_evidence_posts(all_posts, limit=15)
     
     audience_intelligence = {
         "measured_communities": sorted(communities, key=lambda k: communities[k], reverse=True)[:8],
@@ -555,7 +619,8 @@ def _load_trend_meta_from_filtered(filtered_trends):
         "sentiment_by_signal": sentiments,
     }
     
-    log_analysis.info("  [EVIDENCE] Loaded %d raw post samples from %d filtered trends", len(evidence_block), len(rows))
+    log_analysis.info("  [EVIDENCE] Strategically selected %d posts from %d total across %d filtered trends", 
+                     len(evidence_block), len(all_posts), len(rows))
     
     return audience_intelligence, references[:9], evidence_block
 
