@@ -235,13 +235,13 @@ def _weight_market_feedback(trend_signals):
     conn = None
     cur = None
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-        
-        feedback_parts = []
-        
-        # Extract keywords from current trends to search history
-        current_keywords = [t[1].lower() for t in trend_signals]  # t[1] is the signal name
+        with get_connection() as conn:
+            cur = conn.cursor()
+            
+            feedback_parts = []
+            
+            # Extract keywords from current trends to search history
+            current_keywords = [t[1].lower() for t in trend_signals]  # t[1] is the signal name
         
         # Find historical designs linked to similar trends
         conditions = []
