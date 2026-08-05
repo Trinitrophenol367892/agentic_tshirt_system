@@ -3,3 +3,5 @@ requests
 python-dotenv
 openai
 xpoz
+mcp>=1.9.0,<2.0.0  # xpoz 0.7.6 unpacks a 3-tuple from mcp's streamable_http_client; mcp 2.0 dropped the third element and breaks XpozClient construction.
+
