@@ -686,27 +686,35 @@ def _load_trend_meta_from_filtered(filtered_trends):
         velocities.append(f"{signal}: {meta.get('velocity_source', '?')} velocity")
         
         # Fetch ALL raw posts from dedicated trend_posts table for this trend
-        post_cur = conn.execute("""
-            SELECT content, platform, likes, comments, author_handle, post_timestamp
-            FROM trend_posts 
-            WHERE trend_id = ? 
-            ORDER BY likes DESC 
-            LIMIT 10
-        """, (trend_id,))
-        post_rows = post_cur.fetchall()
-        
-        for post_content, platform, likes, comments, author, timestamp in post_rows:
-            if post_content and len(post_content.strip()) > 20:
-                all_posts.append({
-                    "post_id": f"{trend_id}_{platform}_{likes}",  # Unique ID for deduplication
-                    "signal": signal,
-                    "platform": platform,
-                    "content": post_content[:300],
-                    "likes": likes,
-                    "comments": comments,
-                    "author": author,
-                    "post_timestamp": timestamp or ""
-                })
+        try:
+            post_cur = conn.cursor()
+            post_cur.execute("""
+                SELECT content, platform, likes, comments, author_handle, post_timestamp
+                FROM trend_posts 
+                WHERE trend_id = ? 
+                ORDER BY likes DESC 
+                LIMIT 10
+            """, (trend_id,))
+            post_rows = post_cur.fetchall()
+            
+            for post_content, platform, likes, comments, author, timestamp in post_rows:
+                if post_content and len(post_content.strip()) > 20:
+                    all_posts.append({
+                        "post_id": f"{trend_id}_{platform}_{likes}",  # Unique ID for deduplication
+                        "signal": signal,
+                        "platform": platform,
+                        "content": post_content[:300],
+                        "likes": likes,
+                        "comments": comments,
+                        "author": author,
+                        "post_timestamp": timestamp or ""
+                    })
+        except sqlite3.ProgrammingError as e:
+            logger.error(f"Database error fetching posts for trend {trend_id}: {e}")
+            continue
+        finally:
+            if post_cur:
+                post_cur.close()
     
     # Apply strategic evidence selection (Optimization B)
     evidence_block = _select_evidence_posts(all_posts, limit=15)
