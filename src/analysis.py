@@ -261,10 +261,14 @@ def generate_granular_brief(trends_data, direction_feedback=None, market_feedbac
                        thematic_coherence.get('score') if thematic_coherence else None,
                        len(evidence_block or []))
 
-    # OPTIMIZATION 3: LLM Prompt Optimization with Print-Specific Constraints
-    system_prompt = """You are an expert trend analyst, creative director, and print production specialist.
-Analyze the provided social signals AND the measured audience intelligence, and generate a highly granular brief.
+    # OPTIMIZATION 3: LLM Prompt Optimization with Print-Specific Constraints + Evidence-Based Directives
+    system_prompt = """You are a Cultural Linguist and Lead Product Strategist for a viral t-shirt brand.
+Analyze the provided social signals, measured audience intelligence, AND RAW SOCIAL MEDIA EVIDENCE to generate a highly granular brief.
 Output valid JSON only, no markdown. anti_slop_directives must be specific.
+
+CORE DIRECTIVE:
+DO NOT hallucinate trends, slang, or aesthetics. Every insight MUST be traced back to the RAW_EVIDENCE_BLOCK below.
+If evidence shows users saying "no more fake vibes," your slogan formula MUST reflect that exact phrasing, not generic "authenticity."
 
 PRINT PRODUCTION CONSTRAINTS (CRITICAL):
 - Reject concepts requiring >4 colors, photorealism, gradients, or micro-details
@@ -281,12 +285,32 @@ EXACT top-level keys:
 - product_specifications: {best_garment_colors, print_technique, placement}
 - traffic_and_seo_directives: {primary_seo_keywords, secondary_seo_keywords, email_subject_hooks, community_angles}
 
+EVIDENCE-BASED INSTRUCTIONS:
+
+1. audience_psychographics.trigger_phrases:
+   - Extract EXACT phrases, slang, or sentence structures from the RAW_EVIDENCE_BLOCK.
+   - Do not paraphrase unless necessary for brevity. Preserve the authentic "voice."
+   - Example: If evidence says "rip off corporate bs," use that exact phrase, not "anti-corporate."
+
+2. copywriting_directives.slogan_formulas:
+   - Create formulas that mimic the syntax found in high-engagement posts.
+   - If evidence shows short, punchy fragments ("No maintenance."), use fragments.
+   - If evidence shows ironic long sentences, use that structure.
+   - MUST include at least one formula derived directly from a top post's caption.
+
+3. design_directives.visual_style & layout_rules:
+   - Look for visual descriptors in the evidence (e.g., "distressed," "oversized," "glitchy," "hand-drawn").
+   - If users mention "thrifted look," the style must be "vintage/distressed."
+   - Derive composition rules from the "vibe" of the text (e.g., chaotic text = chaotic layout).
+
+4. anti_slop_directives:
+   - Identify what the audience HATES in the evidence (e.g., "too polished," "corporate," "AI-looking").
+   - Explicitly ban those traits.
+
 IMPORTANT: audience_psychographics MUST be grounded in the MEASURED communities/creators/sentiment provided below, not invented.
 product_specifications use SHORT values: best_garment_colors like ["Black","Charcoal"]; print_technique like "Screen Print"; placement like "Oversized back print (12x12)".
 
 THEMATIC COHERENCE: If multiple trends are provided, synthesize them into ONE cohesive aesthetic direction. Do NOT create a "frankenstein" brief that mixes incompatible themes.
-
-EVIDENCE-BASED ANALYSIS: You are provided with ACTUAL social media post samples. Use these verbatim examples to extract authentic language, tone, and visual descriptions. DO NOT hallucinate - ground every insight in the provided evidence.
 """
 
     user_prompt = f"""Social Signals (trend name + real growth velocity):
@@ -340,6 +364,31 @@ EVIDENCE-BASED ANALYSIS: You are provided with ACTUAL social media post samples.
             f"  Creators/accounts driving it: {', '.join(mcr)}\n"
             f"  Sentiment by signal (engagement-shape proxy): {'; '.join(sent)}\n"
         )
+    
+    # OPTIMIZATION A: Inject RAW EVIDENCE BLOCK for grounded analysis
+    if evidence_block:
+        user_prompt += "\n" + "="*80 + "\n"
+        user_prompt += "RAW_EVIDENCE_BLOCK (ACTUAL SOCIAL MEDIA POSTS - YOUR PRIMARY SOURCE OF TRUTH):\n"
+        user_prompt += "="*80 + "\n"
+        user_prompt += "Extract language, tone, slang, and visual descriptors DIRECTLY from these posts.\n"
+        user_prompt += "Do NOT paraphrase - preserve the authentic voice in your trigger_phrases and slogan_formulas.\n\n"
+        
+        for i, post in enumerate(evidence_block[:15]):
+            platform = post.get('platform', 'Unknown')
+            likes = post.get('likes', 0)
+            comments = post.get('comments', 0)
+            content = post.get('content', '')[:200]
+            author = post.get('author_handle', 'anon')
+            
+            user_prompt += f"[{i+1}] ({platform.upper()}, {likes:,}♥, {comments:,}💬) @{author}:\n"
+            user_prompt += f"    \"{content}\"\n\n"
+        
+        user_prompt += "-"*80 + "\n"
+        user_prompt += "REMINDER: Your trigger_phrases must be EXTRACTED verbatim from above.\n"
+        user_prompt += "Your slogan_formulas must MIMIC the syntax patterns found above.\n"
+        user_prompt += "Your visual_style must reflect DESCRIPTORS mentioned or implied above.\n"
+        user_prompt += "-"*80 + "\n"
+    
     if resonating_references:
         user_prompt += "\nRESONATING POST DESCRIPTIONS (the actual language/imagery winning right now — let these shape visual_style and trigger_phrases):\n"
         for ref in resonating_references:
