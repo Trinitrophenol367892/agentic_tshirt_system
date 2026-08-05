@@ -280,10 +280,13 @@ Pick 3 to {MAX_DISCOVERED_KEYWORDS}. Prioritize freshness, wearability, visual p
 
         for keyword in validated_keywords:
             term = keyword.lstrip("#")
+            # Sequential platform scanning to avoid burst rate limits
             for plat, q, fields in (("twitter", f'"{term}"', TW_FIELDS),
                                     ("tiktok", term, TK_FIELDS),
                                     ("reddit", term, RD_FIELDS)):
                 posts = self._search(plat, q, start_date, end_date, fields)
+                # Small delay between platform queries
+                time.sleep(0.5)
                 for p in posts:
                     eng, replies, likes = _post_engagement(p, plat)
                     if eng < MIN_ENGAGEMENT:
@@ -402,20 +405,30 @@ Pick 3 to {MAX_DISCOVERED_KEYWORDS}. Prioritize freshness, wearability, visual p
         log_ingest.info("  [STAGE 3] Extracted %d enriched signals.", len(signals))
         return signals, posts_to_store
 
-    def _search(self, platform, query, start_date, end_date, fields):
-        try:
-            if platform == "twitter":
-                r = self.client.twitter.search_posts(query, start_date=start_date, end_date=end_date, language="en", fields=fields, limit=20)
-            elif platform == "tiktok":
-                r = self.client.tiktok.search_posts(query, start_date=start_date, end_date=end_date, fields=fields, limit=20)
-            else:
-                r = self.client.reddit.search_posts(query, start_date=start_date, end_date=end_date, sort="top", time="week", fields=fields, limit=20)
-            posts = r.data if r and r.data else []
-            log_ingest.debug("      %s '%s': %d posts", platform, query[:30], len(posts))
-            return posts
-        except Exception as e:
-            log_ingest.warning("      %s failed: %s", platform, str(e)[:80])
-            return []
+    def _search(self, platform, query, start_date, end_date, fields, max_retries=3):
+        """Search with adaptive backoff for rate limit errors."""
+        for attempt in range(max_retries):
+            try:
+                if platform == "twitter":
+                    r = self.client.twitter.search_posts(query, start_date=start_date, end_date=end_date, language="en", fields=fields, limit=20)
+                elif platform == "tiktok":
+                    r = self.client.tiktok.search_posts(query, start_date=start_date, end_date=end_date, fields=fields, limit=20)
+                else:
+                    r = self.client.reddit.search_posts(query, start_date=start_date, end_date=end_date, sort="top", time="week", fields=fields, limit=20)
+                posts = r.data if r and r.data else []
+                log_ingest.debug("      %s '%s': %d posts", platform, query[:30], len(posts))
+                return posts
+            except Exception as e:
+                error_msg = str(e)
+                if "Usage limit exceeded" in error_msg:
+                    wait_time = 60 * (attempt + 1)  # 60s, 120s, 180s
+                    log_ingest.warning("      %s rate limited. Waiting %ds before retry %d/%d...", platform, wait_time, attempt+1, max_retries)
+                    time.sleep(wait_time)
+                else:
+                    log_ingest.warning("      %s failed: %s", platform, error_msg[:80])
+                    return []
+        log_ingest.warning("      %s failed after %d retries", platform, max_retries)
+        return []
 
 
 def load_confirmed_trends():
