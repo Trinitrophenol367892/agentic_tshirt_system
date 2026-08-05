@@ -1,5 +1,6 @@
 import json
 import time
+import sqlite3
 from .database import get_connection
 from .llm_client import governed_chat_completion, MAIN_MODEL
 from .llm_utils import safe_extract_content
@@ -653,6 +654,11 @@ def _load_trend_meta_from_filtered(filtered_trends):
     trend_ids = [t[0] for t in filtered_trends]
     placeholders = ','.join('?' * len(trend_ids))
     
+    communities, creators = {}, {}
+    references, sentiments, velocities = [], [], []
+    all_posts = []  # Collect all posts first, then apply strategic selection
+    
+    # Use a single connection for both trends and posts queries to avoid "closed database" errors
     with get_connection() as conn:
         cur = conn.execute(f"""
             SELECT id, signal, meta_json 
@@ -661,60 +667,57 @@ def _load_trend_meta_from_filtered(filtered_trends):
             ORDER BY timestamp DESC
         """, trend_ids)
         rows = cur.fetchall()
-    
-    communities, creators = {}, {}
-    references, sentiments, velocities = [], [], []
-    all_posts = []  # Collect all posts first, then apply strategic selection
-    
-    for trend_id, signal, meta_raw in rows:
-        try:
-            meta = json.loads(meta_raw) if meta_raw else {}
-        except Exception:
-            meta = {}
         
-        if not meta:
-            continue
-        
-        for c in meta.get("top_communities", []):
-            communities[c] = communities.get(c, 0) + 1
-        for c in meta.get("top_creators", []):
-            creators[c] = creators.get(c, 0) + 1
-        for ref in meta.get("resonating_references", []):
-            references.append(f"[{signal}] {ref}")
-        if meta.get("sentiment_proxy"):
-            sentiments.append(f"{signal}: {meta['sentiment_proxy']}")
-        velocities.append(f"{signal}: {meta.get('velocity_source', '?')} velocity")
-        
-        # Fetch ALL raw posts from dedicated trend_posts table for this trend
-        try:
-            post_cur = conn.cursor()
-            post_cur.execute("""
-                SELECT content, platform, likes, comments, author_handle, post_timestamp
-                FROM trend_posts 
-                WHERE trend_id = ? 
-                ORDER BY likes DESC 
-                LIMIT 10
-            """, (trend_id,))
-            post_rows = post_cur.fetchall()
+        for trend_id, signal, meta_raw in rows:
+            try:
+                meta = json.loads(meta_raw) if meta_raw else {}
+            except Exception:
+                meta = {}
             
-            for post_content, platform, likes, comments, author, timestamp in post_rows:
-                if post_content and len(post_content.strip()) > 20:
-                    all_posts.append({
-                        "post_id": f"{trend_id}_{platform}_{likes}",  # Unique ID for deduplication
-                        "signal": signal,
-                        "platform": platform,
-                        "content": post_content[:300],
-                        "likes": likes,
-                        "comments": comments,
-                        "author": author,
-                        "post_timestamp": timestamp or ""
-                    })
-        except sqlite3.ProgrammingError as e:
-            logger.error(f"Database error fetching posts for trend {trend_id}: {e}")
-            continue
-        finally:
-            if post_cur:
-                post_cur.close()
+            if not meta:
+                continue
+            
+            for c in meta.get("top_communities", []):
+                communities[c] = communities.get(c, 0) + 1
+            for c in meta.get("top_creators", []):
+                creators[c] = creators.get(c, 0) + 1
+            for ref in meta.get("resonating_references", []):
+                references.append(f"[{signal}] {ref}")
+            if meta.get("sentiment_proxy"):
+                sentiments.append(f"{signal}: {meta['sentiment_proxy']}")
+            velocities.append(f"{signal}: {meta.get('velocity_source', '?')} velocity")
+            
+            # Fetch ALL raw posts from dedicated trend_posts table for this trend
+            post_cur = None
+            try:
+                post_cur = conn.cursor()
+                post_cur.execute("""
+                    SELECT content, platform, likes, comments, author_handle, post_timestamp
+                    FROM trend_posts 
+                    WHERE trend_id = ? 
+                    ORDER BY likes DESC 
+                    LIMIT 10
+                """, (trend_id,))
+                post_rows = post_cur.fetchall()
+                
+                for post_content, platform, likes, comments, author, timestamp in post_rows:
+                    if post_content and len(post_content.strip()) > 20:
+                        all_posts.append({
+                            "post_id": f"{trend_id}_{platform}_{likes}",  # Unique ID for deduplication
+                            "signal": signal,
+                            "platform": platform,
+                            "content": post_content[:300],
+                            "likes": likes,
+                            "comments": comments,
+                            "author": author,
+                            "post_timestamp": timestamp or ""
+                        })
+            except sqlite3.ProgrammingError as e:
+                logger.error(f"Database error fetching posts for trend {trend_id}: {e}")
+                continue
+            finally:
+                if post_cur:
+                    post_cur.close()
     
     # Apply strategic evidence selection (Optimization B)
     evidence_block = _select_evidence_posts(all_posts, limit=15)
