@@ -216,6 +216,101 @@ def _load_trend_meta():
     return audience_intelligence, references[:9], evidence_block
 
 
+def _weight_market_feedback(trend_signals):
+    """
+    OPTIMIZATION D: Feedback Integration - Market Reality Check
+    
+    Analyzes the 'performance' table to find historical success/failure patterns
+    related to the current trend signals. Returns a weighted feedback string for the LLM.
+    
+    Strategy:
+    - If past trends similar to current ones had sales → Highlight WINNING PATTERNS to emulate
+    - If they had clicks but no sales → Highlight FAILURE PATTERNS to avoid
+    - Weight recent performance higher than old performance
+    """
+    if not trend_signals:
+        return ""
+    
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        feedback_parts = []
+        
+        # Extract keywords from current trends to search history
+        current_keywords = [t[1].lower() for t in trend_signals]  # t[1] is the signal name
+        
+        # Find historical designs linked to similar trends
+        conditions = []
+        params = []
+        for kw in current_keywords:
+            conditions.append("ct.trend_name LIKE ?")
+            params.append(f"%{kw}%")
+        
+        if not conditions:
+            return ""
+        
+        query = f"""
+            SELECT ct.trend_name, ct.brief_theme, ct.design_slogan, ct.judge_score,
+                   p.clicks, p.sales, p.revenue
+            FROM confirmed_trends ct
+            LEFT JOIN performance p ON ct.design_id = p.design_id
+            WHERE {" OR ".join(conditions)}
+            ORDER BY ct.confirmed_at DESC
+            LIMIT 20
+        """
+        
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        
+        if not rows:
+            return ""
+        
+        feedback_parts.append("\n" + "="*80)
+        feedback_parts.append("MARKET REALITY CHECK (Historical Performance Data)")
+        feedback_parts.append("="*80)
+        feedback_parts.append("Use this data to bias your decisions:")
+        feedback_parts.append("- WINNING PATTERNS: Explicitly incorporate successful elements (tone, visual style, slogan structure)")
+        feedback_parts.append("- FAILURE PATTERNS: Add to negative_constraints to avoid repeating mistakes")
+        feedback_parts.append("")
+        
+        successes = [r for r in rows if (r[5] or 0) > 0]  # Has sales
+        failures = [r for r in rows if (r[5] or 0) == 0 and (r[4] or 0) > 0]  # Clicks but no sales
+        
+        if successes:
+            feedback_parts.append("✅ WINNING PATTERNS (Emulate these):")
+            for r in successes[:3]:  # Top 3 winners
+                trend_name, brief_theme, slogan, score, clicks, sales, revenue = r
+                revenue_val = revenue if revenue else 0
+                feedback_parts.append(f"  - Trend '{trend_name}': Slogan '{slogan}' generated {sales} sales, ${revenue_val:.2f}")
+                feedback_parts.append(f"    Theme: {brief_theme} | Judge Score: {score}/10")
+                feedback_parts.append(f"    → EMULATE: This tone/visual style converted. Analyze what made it work.")
+            feedback_parts.append("")
+        
+        if failures:
+            feedback_parts.append("⚠️ FAILURE PATTERNS (Avoid these):")
+            for r in failures[:3]:  # Top 3 failures
+                trend_name, brief_theme, slogan, score, clicks, sales, revenue = r
+                feedback_parts.append(f"  - Trend '{trend_name}': Slogan '{slogan}' got {clicks} clicks but ZERO sales")
+                feedback_parts.append(f"    Theme: {brief_theme} | Judge Score: {score}/10")
+                feedback_parts.append(f"    → AVOID: This attracted clicks but didn't convert. Identify the mismatch.")
+            feedback_parts.append("")
+        
+        if not successes and not failures:
+            return ""
+        
+        feedback_parts.append("-"*80)
+        return "\n".join(feedback_parts)
+        
+    except Exception as e:
+        log_analysis.warning(f"Market feedback weighting failed: {e}")
+        return ""
+    finally:
+        if conn:
+            conn.close()
+
+
 def load_market_feedback():
     """
     FIX 3: read the performance table back, joined to designs->briefs->trends.
@@ -470,7 +565,10 @@ def run_analysis(direction_feedback=None):
     # Load audience intelligence from filtered trends only (now includes evidence_block)
     audience_intelligence, resonating_references, evidence_block = _load_trend_meta_from_filtered(trends)
     
-    market_feedback = load_market_feedback()
+    # OPTIMIZATION D: Generate market feedback with trend-specific weighting
+    market_feedback = _weight_market_feedback(trends)
+    if not market_feedback:
+        market_feedback = load_market_feedback()  # Fallback to general feedback if no trend-specific data
     
     brief = generate_granular_brief(trends, direction_feedback=direction_feedback,
                                     market_feedback=market_feedback,
