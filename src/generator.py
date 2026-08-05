@@ -188,13 +188,19 @@ def run_generator(brief, feedback=None):
         slogan = slogans[i] if i < len(slogans) else slogans[-1]
         seed = random.randint(0, 999999)
         log_generator.info("  Candidate [%d/%d] '%s' | %s", i+1, n, slogan, dd.get("type", "?"))
+        
+        # Rate limit protection: staggered delays between requests
+        if i > 0:
+            # Stair-step delay: 5s base + 2s per previous attempt to avoid burst limits
+            delay = 5.0 + (i * 2.0)
+            log_generator.info(f"Rate limit protection: Waiting {delay:.1f}s before next image request...")
+            time.sleep(delay)
+        
         image_url = generate_image(dd.get("visual_prompt", ""), seed, config)
         designs.append({"image_prompt": dd.get("visual_prompt", ""), "image_url": image_url, "slogan": slogan,
                         "garment_color": random.choice(garment_colors), "print_technique": print_technique,
                         "placement": placement, "image_seed": seed, "mood": dd.get("mood", ""),
                         "composition_type": dd.get("type", "unknown")})
-        if i < n - 1:
-            time.sleep(2)
     with get_connection() as conn:
         brief_id = conn.execute("SELECT id FROM briefs ORDER BY timestamp DESC LIMIT 1").fetchone()[0]
         for dd in designs:
