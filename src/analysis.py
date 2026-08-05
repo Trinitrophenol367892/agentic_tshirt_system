@@ -233,6 +233,7 @@ def _weight_market_feedback(trend_signals):
         return ""
     
     conn = None
+    cur = None
     try:
         conn = get_connection()
         cur = conn.cursor()
@@ -308,6 +309,8 @@ def _weight_market_feedback(trend_signals):
         log_analysis.warning(f"Market feedback weighting failed: {e}")
         return ""
     finally:
+        if cur:
+            cur.close()
         if conn:
             conn.close()
 
