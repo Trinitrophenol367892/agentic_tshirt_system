@@ -15,3 +15,12 @@ judge:
 
 orchestrator:
   max_generation_attempts: 3
+
+generator:
+  # Number of distinct art directions + slogan candidates generated per pipeline
+  # attempt. The art director invents that many DIFFERENT composition archetypes
+  # appropriate to the brief's visual_style (no hardcoded taxonomy).
+  candidates_per_attempt: 5
+  image_model: flux
+  image_width: 1024
+  image_height: 1024
